@@ -123,6 +123,16 @@ else
   $(error Sub Variant $(MCU_SUB_VARIANT) is unknown)
 endif
 
+# SoftDevice FWID (what the SoftDevice itself reports). The bootloader-only DFU package below REQUIRES it, so a node with a different
+# SoftDevice refuses the package instead of being bricked by a bootloader that does not fit. Unknown combination = 0xFFFE (any).
+ifeq ($(SD_NAME)_$(SD_VERSION),s140_6.1.1)
+  SD_FWID = 0x00B6
+else ifeq ($(SD_NAME)_$(SD_VERSION),s140_7.3.0)
+  SD_FWID = 0x0123
+else
+  SD_FWID = 0xFFFE
+endif
+
 #------------------------------------------------------------------------------
 # SOURCE FILES
 #------------------------------------------------------------------------------
@@ -182,6 +192,10 @@ else
 # pinconfig is required for 840 for CF2
 C_SRC += src/boards/$(BOARD)/pinconfig.c
 
+# fw_ota - LoRa firmware-pull apply-from-slot (single-slot, 2026-09-15)
+C_SRC += src/fw_ota/fw_ota_apply.c
+C_SRC += src/lzma/LzmaDec.c
+
 # USB Application ( MSC + UF2 )
 C_SRC += \
 	src/usb/msc_uf2.c \
@@ -217,6 +231,8 @@ IPATH += \
   src/boards/$(BOARD) \
   src/cmsis/include \
   src/usb \
+  src/fw_ota \
+  src/lzma \
   $(TUSB_PATH)
 
 # nrfx
@@ -302,6 +318,21 @@ endif
 
 # Defined Symbol (MACROS)
 CFLAGS += -D__HEAP_SIZE=0
+CFLAGS += -D_LZMA_SIZE_OPT
+CFLAGS += -flto
+
+# -flto silently DROPS every C interrupt/SVC handler that is referenced only by
+# the assembly vector table: the linker keeps the startup file's weak
+# `b .` default instead, so SVC_Handler, SysTick_Handler, USBD_IRQHandler,
+# SWI2_EGU2_IRQHandler (SoftDevice events) etc. all become infinite loops.
+# (Found on hardware 2026-09-18: the bootloader hung in the default SysTick
+# handler right after the first flash erase of an apply; the same defect very
+# likely caused the 2026-09-16 brick.) Compile the objects that define handlers
+# without LTO so their strong symbols win. The list is the set of strong
+# handler definitions in the stock, non-LTO build. __attribute__((used)) does
+# NOT fix it. tools/check_vectors.py verifies a built image against this.
+NOLTO_OBJS = app_timer boards dfu_ble_svc main nrfx_power usb
+$(foreach o,$(NOLTO_OBJS),$(BUILD)/$(o).o): CFLAGS += -fno-lto
 CFLAGS += -DCONFIG_GPIO_AS_PINRESET
 
 # Skip defining CONFIG_NFCT_PINS_AS_GPIOS if the device uses the NFCT.
@@ -310,6 +341,8 @@ ifneq ($(USE_NFCT),yes)
 endif
 
 CFLAGS += -DSOFTDEVICE_PRESENT
+FW_OTA_BL_REV ?= 1
+CFLAGS += -DFW_OTA_BL_REV=$(FW_OTA_BL_REV)
 CFLAGS += -DUF2_VERSION_BASE='"$(GIT_VERSION)"'
 CFLAGS += -DUF2_VERSION='"$(GIT_VERSION) $(GIT_SUBMODULE_VERSIONS)"'
 CFLAGS += -DBLEDIS_FW_VERSION='"$(GIT_VERSION) $(SD_NAME) $(SD_VERSION)"'
@@ -385,7 +418,7 @@ INC_PATHS = $(addprefix -I,$(IPATH))
 .PHONY: all clean flash flash-dfu flash-sd flash-mbr dfu-flash sd mbr gdbflash gdb
 
 # default target to build
-all: $(BUILD)/$(OUT_NAME).out $(BUILD)/$(OUT_NAME)_nosd.hex $(BUILD)/update-$(OUT_NAME)_nosd.uf2 $(BUILD)/$(MERGED_FILE).hex $(BUILD)/$(MERGED_FILE).zip
+all: $(BUILD)/$(OUT_NAME).out $(BUILD)/$(OUT_NAME)_nosd.hex $(BUILD)/update-$(OUT_NAME)_nosd.uf2 $(BUILD)/$(MERGED_FILE).hex $(BUILD)/$(MERGED_FILE).zip $(BUILD)/$(OUT_NAME)_bootloader_only.zip
 
 # Print out the value of a make variable.
 # https://stackoverflow.com/questions/16467718/how-to-print-out-a-variable-in-makefile
@@ -448,6 +481,11 @@ $(BUILD)/$(MERGED_FILE).hex: $(BUILD)/$(OUT_NAME).hex
 $(BUILD)/$(MERGED_FILE).zip: $(BUILD)/$(OUT_NAME).hex
 	@$(NRFUTIL) dfu genpkg --dev-type 0x0052 --dev-revision $(DFU_DEV_REV) --bootloader $< --softdevice $(SD_HEX) $@
 
+# Bootloader-ONLY pkg zip: what you send over BLE / serial DFU to a RUNNING node to replace its bootloader (no SoftDevice inside).
+# It carries the required SoftDevice id (--sd-req) and the nRF52840 device revision (the bootloader's unlock code for bootloader updates).
+$(BUILD)/$(OUT_NAME)_bootloader_only.zip: $(BUILD)/$(OUT_NAME).hex
+	@$(NRFUTIL) dfu genpkg --dev-type 0x0052 --dev-revision $(DFU_DEV_REV) --sd-req $(SD_FWID) --bootloader $< $@
+
 #-------------- Artifacts --------------
 $(BIN):
 	@$(MKDIR) -p $@
@@ -456,6 +494,7 @@ copy-artifact: $(BIN)
 	@$(CP) $(BUILD)/update-$(OUT_NAME)_nosd.uf2 $(BIN)
 	@$(CP) $(BUILD)/$(MERGED_FILE).hex $(BIN)
 	@$(CP) $(BUILD)/$(MERGED_FILE).zip $(BIN)
+	@$(CP) $(BUILD)/$(OUT_NAME)_bootloader_only.zip $(BIN)
 
 #--------------------------------------
 # Flash Target

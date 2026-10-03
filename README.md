@@ -1,5 +1,18 @@
 # Adafruit nRF52 Bootloader with Enhanced OTA DFU
 
+## LoRa-OTA fork of OTAFIX 2.3 (RAK3401) - current: rev 7
+
+This branch adds LoRa-OTA support to OTAFIX 2.3 (RAK3401 / RAK4631-class boards): the bootloader applies a compressed image that the
+running MeshCore app has downloaded **over LoRa** into a staging slot, so remote repeaters update themselves from a neighbour without a
+site visit. BLE OTA, serial DFU, UF2 and "no app -> BLE OTA" are unchanged. Status: release candidate, private review.
+
+* Design, flash map, safeguards, build and flashing: [`docs/FWPULL_BOOTLOADER.md`](docs/FWPULL_BOOTLOADER.md); revisions: [`docs/REVISIONS.md`](docs/REVISIONS.md).
+* Tests: `tools/fw_ota_hosttest` (the unmodified apply code on a simulated flash, a power cut at every flash operation: 5153 checks;
+  23/23 mutants caught), `tools/check_vectors.py` (run before flashing any build), `tools/hw_bench` (BLE DFU client, LoRa monitors).
+* Build rev 7: `make BOARD=wiscore_rak3401 FW_OTA_BL_REV=7` with the ARM GCC toolchain on `PATH`; `SOURCE_DATE_EPOCH` makes it reproducible.
+* The application side (user guide, commands, security design) is in the **MeshCore-LoRa-OTA** repository, `docs/lora-ota/`.
+* Licence: MIT like the upstream bootloader; Nordic SDK files keep their own licence. Not an official Adafruit or OTAFIX release.
+
 ## Changes in OTAFIX 2.3
 - **ST7735 Display support**  
   Added ST7735 display driver and refactored display code to allow for configuring different display sizes at the board level.  

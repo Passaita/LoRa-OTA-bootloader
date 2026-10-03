@@ -320,6 +320,18 @@ uint32_t bootloader_init(void)
 }
 
 
+static uint32_t m_ble_idle_ms;   /**< fw_ota rev 5: BLE DFU inactivity timeout (0 = none) */
+
+/* fw_ota rev 5: a DFU packet arrived over BLE - restart the inactivity timeout. */
+void bootloader_dfu_activity(void)
+{
+  if ( m_ble_idle_ms )
+  {
+    app_timer_stop(_dfu_startup_timer);
+    app_timer_start(_dfu_startup_timer, APP_TIMER_TICKS(m_ble_idle_ms), NULL);
+  }
+}
+
 uint32_t bootloader_dfu_start(bool ota, uint32_t timeout_ms, bool cancel_timeout_on_usb)
 {
   uint32_t err_code;
@@ -333,6 +345,13 @@ uint32_t bootloader_dfu_start(bool ota, uint32_t timeout_ms, bool cancel_timeout
   if ( ota )
   {
     err_code = dfu_transport_ble_update_start();
+    if ( timeout_ms )   // fw_ota rev 5: BLE inactivity timeout (dfu_startup_packet_received stays false over BLE; every DFU packet restarts it)
+    {
+      dfu_startup_packet_received = false;
+      m_ble_idle_ms = timeout_ms;
+      app_timer_create(&_dfu_startup_timer, APP_TIMER_MODE_SINGLE_SHOT, dfu_startup_timer_handler);
+      app_timer_start(_dfu_startup_timer, APP_TIMER_TICKS(timeout_ms), NULL);
+    }
   }else
   {
     // DFU mode with timeout can be

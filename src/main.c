@@ -48,6 +48,7 @@
 #include "dfu_transport.h"
 #include "bootloader.h"
 #include "bootloader_util.h"
+#include "fw_ota.h"
 
 #include "nrf.h"
 #include "nrf_soc.h"
@@ -111,8 +112,10 @@ extern void tusb_hal_nrf_power_event(uint32_t event);
 #define DFU_MAGIC_SERIAL_ONLY_RESET     0x4e
 #define DFU_MAGIC_UF2_RESET             0x57
 #define DFU_MAGIC_SKIP                  0x6d
+#define DFU_MAGIC_OTA_SLOT              0xA9  // fw_ota rev 5: BLE OTA whose app upload fills the LoRa-OTA SLOT (`fw pull-ble`), app untouched
 
 #define DFU_DBL_RESET_MAGIC             0x5A1AD5      // SALADS
+#define DFU_TRPL_RESET_MAGIC            0x3C1AD5      // (fw_ota rev 4) second click seen: a third one within the window = BLE OTA
 #define DFU_DBL_RESET_APP               0x4ee5677e
 #define DFU_DBL_RESET_DELAY             500
 #define DFU_DBL_RESET_MEM               0x20007F7C
@@ -139,6 +142,7 @@ uint32_t* dbl_reset_mem = ((uint32_t*) DFU_DBL_RESET_MEM);
 
 // true if ble, false if serial
 bool _ota_dfu = false;
+bool fw_ota_slot_dfu = false;   // fw_ota rev 5: this BLE DFU session fills the LoRa-OTA slot (`fw pull-ble`, GPREGRET 0xA9)
 bool _ota_connected = false;
 bool _sd_inited = false;
 
@@ -174,6 +178,8 @@ int main(void) {
   bootloader_init();
   PRINTF("Bootloader Start\r\n");
   led_state(STATE_BOOTLOADER_STARTED);
+
+  fw_ota_apply_on_boot();
 
   // When updating SoftDevice, bootloader will reset before swapping SD
   if (bootloader_dfu_sd_in_progress()) {
@@ -227,7 +233,10 @@ static void check_dfu_mode(void) {
   _sd_inited = (gpregret == DFU_MAGIC_OTA_APPJUM);
 
   // Start Bootloader in BLE OTA mode
-  _ota_dfu = (gpregret == DFU_MAGIC_OTA_APPJUM) || (gpregret == DFU_MAGIC_OTA_RESET);
+  // fw_ota rev 5: 0xA9 = the same BLE OTA (3401_DFU, the phone's DFU app), but an application upload goes into the staging SLOT - the running
+  // app, the control page and the file system are not touched; the app turns the uploaded .lota into a VALID slot at its next boot.
+  fw_ota_slot_dfu = (gpregret == DFU_MAGIC_OTA_SLOT);
+  _ota_dfu = (gpregret == DFU_MAGIC_OTA_APPJUM) || (gpregret == DFU_MAGIC_OTA_RESET) || fw_ota_slot_dfu;
 
   // Serial only mode
   bool const serial_only_dfu = (gpregret == DFU_MAGIC_SERIAL_ONLY_RESET);
@@ -235,11 +244,24 @@ static void check_dfu_mode(void) {
   bool const dfu_skip        = (gpregret == DFU_MAGIC_SKIP);
 
   bool const reason_reset_pin = (NRF_POWER->RESETREAS & POWER_RESETREAS_RESETPIN_Msk) ? true : false;
+
+  // fw_ota rev 4: triple-click RST = Bluetooth OTA (3401_DFU), for a field node on battery without USB whose app is frozen. RST is the reset
+  // line (the chip is held in reset while it is pressed), so only the NUMBER of quick resets can be counted - in this RAM word, which survives
+  // a pin reset. 2nd click: remember it and wait one more window; a 3rd click inside it lands here with the triple marker. No 3rd click: the
+  // double reset below goes on to USB DFU as before (~0.5 s later).
+  bool const triple_reset = ((*dbl_reset_mem) == DFU_TRPL_RESET_MAGIC) && reason_reset_pin;
+  if (((*dbl_reset_mem) == DFU_DBL_RESET_MAGIC) && reason_reset_pin && !serial_only_dfu && !uf2_dfu && !_ota_dfu && !dfu_skip) {
+    (*dbl_reset_mem) = DFU_TRPL_RESET_MAGIC;
+    NRFX_DELAY_MS(DFU_DBL_RESET_DELAY);                 // RST pressed now -> reset -> triple_reset on the next boot
+    (*dbl_reset_mem) = DFU_DBL_RESET_MAGIC;             // no third click: carry on as a double reset
+  }
+  if (triple_reset) _ota_dfu = true;
+
   bool const double_reset = ((*dbl_reset_mem) == DFU_DBL_RESET_MAGIC) && reason_reset_pin;
 
   // start either serial, uf2 or ble
   bool dfu_start = _ota_dfu || serial_only_dfu || uf2_dfu ||
-                   (((*dbl_reset_mem) == DFU_DBL_RESET_MAGIC) && reason_reset_pin);
+                   (((*dbl_reset_mem) == DFU_DBL_RESET_MAGIC) && reason_reset_pin);   // (a triple reset set _ota_dfu above)
 
   // Clear GPREGRET if it is our values
   if (dfu_start || dfu_skip) NRF_POWER->GPREGRET = 0;
@@ -310,6 +332,11 @@ static void check_dfu_mode(void) {
     if (APP_ASKS_FOR_SINGLE_TAP_RESET() || uf2_dfu || serial_only_dfu) {
       // If USB is not enumerated in 3s (eg. because we're running on battery), we restart into app.
       bootloader_dfu_start(_ota_dfu, 3000, true);
+    } else if (_ota_dfu) {
+      // fw_ota rev 5 (owner): a repeater must not stay off the mesh after a `start ota` / `fw pull-ble` sent by mistake: 5 min without a
+      // DFU packet ends BLE DFU (the timer restarts with every packet, so a slow 20-byte upload is not cut off). A valid app then runs
+      // again; without one, main() below re-enters BLE DFU for another window. An unfinished slot fill leaves the slot INVALID.
+      bootloader_dfu_start(true, FW_OTA_BLE_IDLE_MS, false);
     } else {
       // No timeout if bootloader requires user action (double-reset).
       bootloader_dfu_start(_ota_dfu, 0, false);
@@ -321,6 +348,8 @@ static void check_dfu_mode(void) {
     } else {
       usb_teardown();
     }
+
+    fw_ota_after_dfu();   // fw_ota: invalidate stale slot if a raw app was just written
   }
 }
 

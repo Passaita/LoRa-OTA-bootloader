@@ -26,9 +26,11 @@
 #include "sdk_common.h"
 
 #include "boards.h"
+#include "fw_ota.h"   /* fw_ota: app-region size clamp + stale-slot hook */
 
 static dfu_state_t                  m_dfu_state;                /**< Current DFU state. */
 static uint32_t                     m_image_size;               /**< Size of the image that will be transmitted. */
+static bool                         m_dfu_blocked;              /**< fw_ota: set after an unrecoverable data error (bad size, missing firmware tag): every later data packet is refused. The stock trick of setting m_data_received = 0xFFFFFFFF does NOT block, because m_data_received + data_length wraps past zero. */
 
 static dfu_start_packet_t           m_start_packet;             /**< Start packet received for this update procedure. Contains update mode and image sizes information to be used for image transfer. */
 static uint8_t                      m_init_packet[64];          /**< Init packet, can hold CRC, Hash, Signed Hash and similar, for image validation, integrety check and authorization checking. */ 
@@ -214,7 +216,27 @@ static uint32_t dfu_activate_app(void)
 
     bootloader_dfu_update_process(update_status);
 
+    /* fw_ota: a raw app now occupies the app region; the staging slot is stale. */
+    fw_ota_on_dfu_app_complete(m_start_packet.app_image_size);
+
     return err_code;
+}
+
+
+/**@brief fw_ota rev 5: the upload filled the SLOT (`fw pull-ble`). Nothing to activate - the app region and the bootloader settings are
+ *        untouched (the app stays valid); just leave DFU so the app starts again and turns the .lota in the slot into a VALID slot.
+ */
+static void dfu_cleared_func_slot(void)
+{
+    /* fw_ota rev 5: the first SLOT page was erased - the app region was NOT, so the bootloader settings must keep bank 0 VALID
+     * (the stock "bank 0 erased" notice would mark the untouched app invalid and leave the node in DFU - found on board 3). */
+}
+
+
+static uint32_t dfu_activate_slot(void)
+{
+    dfu_reset();
+    return NRF_SUCCESS;
 }
 
 
@@ -279,7 +301,9 @@ void dfu_register_callback(dfu_callback_t callback_handler)
 
 uint32_t dfu_start_pkt_handle(dfu_update_packet_t * p_packet)
 {
+    bootloader_dfu_activity();   /* fw_ota rev 5: BLE inactivity timeout restarts */
     m_start_packet = *(p_packet->params.start_packet);
+    m_dfu_blocked  = false;
 
     // Check that the requested update procedure is supported.
     // Currently the following combinations are allowed:
@@ -314,10 +338,35 @@ uint32_t dfu_start_pkt_handle(dfu_update_packet_t * p_packet)
     {
         return NRF_ERROR_DATA_SIZE;
     }
+
+    /* fw_ota: above the app region come the staging slot, the control page and the file system. Rev 6: a raw app may use the
+     * slot too (a stock app of up to 792 KiB installs - offboarding / recovery without the stock bootloader); only the control
+     * page and the file system above it are protected. Such an app replaces whatever was staged in the slot. */
+    if (m_start_packet.app_image_size > FW_OTA_RAW_APP_MAX)
+    {
+        return NRF_ERROR_DATA_SIZE;
+    }
+
+    /* fw_ota: raw uploads (BLE OTA / serial DFU) are NOT tag-checked (bootloader rev 3):
+     * any app the stock bootloader would take is accepted, so a node can be moved back to
+     * factory firmware. Only an apply from the LoRa staging slot still requires the tag
+     * (fw_ota_apply.c). The factory device-type / SoftDevice checks (dfu_init.c) stay. */
+    fw_ota_head_begin(false);
     m_functions.prepare  = dfu_prepare_func_app_erase;
     m_functions.cleared  = dfu_cleared_func_app;
-    
-    if (IS_UPDATING_SD(m_start_packet))
+    m_storage_handle_app.block_id = DFU_BANK_0_REGION_START;
+
+    if (fw_ota_slot_dfu)
+    {
+        /* fw_ota rev 5 (`fw pull-ble`): an application upload is written to the staging SLOT, never over the app. Only an
+         * application, and never beyond the slot (the control page and the file system follow it). The "slot zip" starts the .lota
+         * 0x1000 - 160 bytes into the file, so its payload lands at the slot's payload offset. */
+        if (!IS_UPDATING_APP(m_start_packet) || m_image_size > FW_OTA_SLOT_SIZE) return NRF_ERROR_NOT_SUPPORTED;
+        m_storage_handle_app.block_id = FW_OTA_SLOT_ADDR;
+        m_functions.cleared  = dfu_cleared_func_slot;
+        m_functions.activate = dfu_activate_slot;
+    }
+    else if (IS_UPDATING_SD(m_start_packet))
     {
         m_functions.activate = dfu_activate_sd;
     }
@@ -345,6 +394,7 @@ uint32_t dfu_data_pkt_handle(dfu_update_packet_t * p_packet)
     uint32_t * p_data;
 
     VERIFY_PARAM_NOT_NULL(p_packet);
+    bootloader_dfu_activity();   /* fw_ota rev 5 */
 
     // Check pointer alignment.
     if (!is_word_aligned(p_packet->params.data_packet.p_data_packet))
@@ -360,6 +410,11 @@ uint32_t dfu_data_pkt_handle(dfu_update_packet_t * p_packet)
             return NRF_ERROR_INVALID_STATE;
 
         case DFU_STATE_RX_DATA_PKT:
+            if (m_dfu_blocked)
+            {
+                return NRF_ERROR_INVALID_STATE;
+            }
+
             data_length = p_packet->params.data_packet.packet_length * sizeof(uint32_t);
 
             if ((m_data_received + data_length) > m_image_size)
@@ -370,11 +425,21 @@ uint32_t dfu_data_pkt_handle(dfu_update_packet_t * p_packet)
                 // the flash area. This will ensure that all future application data packet writes
                 // will be blocked because of the above check.
                 m_data_received = 0xFFFFFFFF;
+                m_dfu_blocked   = true;
 
                 return NRF_ERROR_DATA_SIZE;
             }
 
             p_data = (uint32_t *)p_packet->params.data_packet.p_data_packet;
+
+            // fw_ota: head check hook - always passes since rev 3 (fw_ota_head_begin(false) at START);
+            // kept so a check could be re-enabled without touching this path.
+            if (fw_ota_head_feed((uint8_t const *) p_data, data_length, m_data_received) == FW_OTA_HEAD_REJECT)
+            {
+                m_data_received = 0xFFFFFFFF;
+                m_dfu_blocked   = true;
+                return NRF_ERROR_INVALID_DATA;
+            }
 
             if ( is_ota() )
             {
@@ -442,6 +507,7 @@ uint32_t dfu_init_pkt_complete(void)
 uint32_t dfu_init_pkt_handle(dfu_update_packet_t * p_packet)
 {
     uint32_t length;
+    bootloader_dfu_activity();   /* fw_ota rev 5 */
 
     switch (m_dfu_state)
     {

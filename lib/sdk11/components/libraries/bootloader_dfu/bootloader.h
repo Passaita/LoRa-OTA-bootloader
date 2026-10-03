@@ -92,6 +92,9 @@ uint32_t bootloader_dfu_sd_update_finalize(void);
 
 void bootloader_mbr_addrs_populate(void);
 
+/** fw_ota rev 5: restart the BLE DFU inactivity timeout (called for every DFU packet). */
+void bootloader_dfu_activity(void);
+
 #endif // BOOTLOADER_H__
 
 /**@} */
