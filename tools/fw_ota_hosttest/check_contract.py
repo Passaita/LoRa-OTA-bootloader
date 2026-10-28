@@ -5,14 +5,14 @@ layout and struct field order. The two are written independently and only
 'must match' by comment - the slot payload-offset bug (2026-09-18) was exactly
 this kind of drift.
 
-Usage: check_contract.py [APP_REPO]   (default: $FW_OTA_APP_REPO or ~/mc_firmware/RAK3401_repeater)
+Usage: check_contract.py [APP_REPO]   (default: $FW_OTA_APP_REPO or ../MeshCore-LoRa-OTA next to this repository)
 Exit 0: agree (or the app repo is absent -> skipped).  Exit 1: mismatch.
 """
 import os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 app_repo = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(
-    'FW_OTA_APP_REPO', os.path.expanduser('~/mc_firmware/RAK3401_repeater'))
+    'FW_OTA_APP_REPO', os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../MeshCore-LoRa-OTA'))
 app_h = os.path.join(app_repo, 'src/helpers/fw_ota/FwOtaSlots.h')
 bl_h = os.path.join(HERE, '../../src/fw_ota/fw_ota.h')
 if not os.path.exists(app_h):
