@@ -15,4 +15,4 @@
 | 1 | 2026-09-18 | First release: apply an LZMA image from the staging slot, control page, power-cut safe apply. | |
 
 Updating: over LoRa with `fw blupdate` (app kept), or by Bluetooth with the `bootloader_only.zip` followed **immediately** by the app
-zip (a Bluetooth/USB bootloader update erases the app). Onboarding a stock node: the bootloader-only zip, then the app zip.
+zip (a Bluetooth/USB bootloader update erases the app). Onboarding a node from the stock OTAFIX bootloader: the `_s140_6.1.1-ONBOARD.zip`, then the app zip.

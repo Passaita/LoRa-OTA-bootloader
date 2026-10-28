@@ -5,7 +5,7 @@ tag `0.9.2-OTAFIX2.3-BP1.4` (which lists the RAK3401 and advertises `3401_DFU` o
 it can unpack a compressed firmware image that the running application has downloaded over LoRa into a staging slot.
 Everything the OTAFIX bootloader does (BLE OTA, serial DFU, double-reset DFU, "no valid app → BLE OTA") is unchanged.
 
-The application half is described in `docs/lora-ota/` of the MeshCore-LoRa-OTA repository. Revisions 1-7: `REVISIONS.md`.
+The application half is described in `docs/lora-ota/` of the MeshCore-LoRa-OTA repository. Revisions: `REVISIONS.md`.
 
 ## Why a custom bootloader
 
@@ -118,15 +118,21 @@ of being bricked by a bootloader that does not fit. The stock bootloader copies 
 Onboarding a node that runs a stock bootloader and a stock app (proven with a factory RAK bootloader 0.4.4 and with OTAFIX 2.3):
 
 1. `start ota` on the stock app (remote admin or console), connect the phone's DFU app (the Android *DFU* app works) and send the
-   **bootloader-only zip**. The transfer wipes the application, so the repeater is off the air from here until step 2 is done.
+   release's **`_s140_6.1.1-ONBOARD.zip`** (SoftDevice + bootloader). From an older LoRa-OTA bootloader, send the
+   **`-bootloader_only.zip`** instead. The transfer wipes the application, so the repeater is off the air from here until step 2 is done.
    When it is applied the node falls back into BLE OTA by itself (OTAFIX >= 2.1; the very old factory 0.4.4 has no BLE fallback, so do not
    interrupt the transfer on such a node).
-2. Send the **tagged LoRa-OTA app zip** (raw write into the app region; it is checked for the firmware tag and must fit 448 KiB).
+2. Send the **tagged LoRa-OTA app `-firmware.zip`** (raw write into the app region; it is checked for the firmware tag and must fit
+   448 KiB).
+3. Join the circle: `fw passphrase <phrase>`, the same phrase as on the other nodes (`fw passphrase` shows the fingerprint to compare).
 
-The node then runs the LoRa-OTA app with its own settings: the name, radio parameters, admin password and identity live in InternalFS
-(0xED000-0xF4000), which neither update touches. The staging slot is **not** filled by a BLE upload - the slot stays empty until the node
-gets an image with `fw pull` (LoRa, from a server you trust) or `fw stage` (USB); it can serve only after that. A freshly onboarded node never
-pulls by itself. A pull asks for the admin password of the *serving* node (typed on the puller), so the new node's own password does not matter.
+The node then runs the LoRa-OTA app with its own settings: the name, radio parameters, admin password, circle key and identity live in
+InternalFS (0xED000-0xF4000), which neither update touches. A normal Bluetooth upload does not fill the staging slot, so the slot stays
+empty until the node gets an image with `fw pull` (over LoRa, from a node of its circle), `fw pull-ble` (Bluetooth **into** the slot,
+rev 5+) or `fw stage` (USB, development build); it can serve only after that. A freshly onboarded node never pulls by itself.
+
+Pulls need no admin password of the serving node: LoRa-OTA traffic is encrypted with a key derived from the circle passphrase, and only
+nodes of the same circle can see, serve or fetch firmware. Without a passphrase LoRa-OTA is off and the node is hidden.
 
 ## Tests and tools in this repository
 
