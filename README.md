@@ -1,222 +1,102 @@
-# Adafruit nRF52 Bootloader with Enhanced OTA DFU
+# LoRa-OTA bootloader for the RAK3401
 
-## LoRa-OTA fork of OTAFIX 2.3 (RAK3401) - current: rev 8
+**The small piece that lets your MeshCore repeaters update themselves over LoRa: no climbing, no cable, no site visit.**
 
-This branch adds LoRa-OTA support to OTAFIX 2.3 (RAK3401 / RAK4631-class boards): the bootloader applies a compressed image that the
-running MeshCore app has downloaded **over LoRa** into a staging slot, so remote repeaters update themselves from a neighbour without a
-site visit. BLE OTA, serial DFU, UF2 and "no app -> BLE OTA" are unchanged. Status: public community test (rev 8 runs on every node of the test fleet).
+This is the bootloader half of **[MeshCore LoRa-OTA](https://github.com/Passaita/MeshCore-LoRa-OTA)**, a community repeater firmware
+that fetches new versions from the repeater next door over the mesh. It is a fork of oltaco's
+[OTAFIX 2.3 bootloader](https://github.com/oltaco/Adafruit_nRF52_Bootloader_OTAFIX) (`0.9.2-OTAFIX2.3-BP1.4`) with **one feature
+added**: it installs a firmware image that the running repeater has downloaded over LoRa. Everything OTAFIX does (Bluetooth OTA,
+serial DFU, UF2, double-reset, "no app -> Bluetooth OTA") works as before.
 
-* Design, flash map, safeguards, build and flashing: [`docs/FWPULL_BOOTLOADER.md`](docs/FWPULL_BOOTLOADER.md); revisions: [`docs/REVISIONS.md`](docs/REVISIONS.md).
-* Tests: `tools/fw_ota_hosttest` (the unmodified apply code on a simulated flash, a power cut at every flash operation: 5153 checks;
-  23/23 mutants caught), `tools/check_vectors.py` (run before flashing any build), `tools/hw_bench` (BLE DFU client, LoRa monitors).
-* Build rev 8: `make BOARD=wiscore_rak3401 FW_OTA_BL_REV=8` with the ARM GCC toolchain on `PATH`. To rebuild the published rev 8 hex
-  byte for byte (crc32 of the served image `E0BC335E`): `SOURCE_DATE_EPOCH=1791302731 make BOARD=wiscore_rak3401 FW_OTA_BL_REV=8
-  GIT_VERSION=0.9.2-OTAFIX2.3-BP1.4-41-blrev8 GIT_SUBMODULE_VERSIONS="lib/nrfx (7a4c9d9) lib/tinyusb (9775e76) lib/uf2 (adbb8c7)"`.
-* The application side (user guide, commands, security design) is in the **MeshCore-LoRa-OTA** repository, `docs/lora-ota/`.
-* Licence: MIT like the upstream bootloader; Nordic SDK files keep their own licence. Not an official Adafruit or OTAFIX release.
+> **Current release: [rev 8](https://github.com/Passaita/LoRa-OTA-bootloader/releases/tag/bootloader-rev8)**, public community test.
+> It runs on every node of the test fleet. Use it together with the
+> [LoRa-OTA app](https://github.com/Passaita/MeshCore-LoRa-OTA/releases/tag/v1.17.28-rc21) (v1.17.28-rc21).
 
-## Changes in OTAFIX 2.3
-- **ST7735 Display support**  
-  Added ST7735 display driver and refactored display code to allow for configuring different display sizes at the board level.  
+## Why a repeater needs it
 
-- **New boards**  
-  Heltec T096  
-  Heltec T1  
-  RAK 3401  
+A program can't safely overwrite itself while it runs. So the LoRa-OTA app only *downloads* the new, compressed image into a spare
+area of flash (the "slot"), checks it, and restarts. The bootloader, which is small, simple and never overwritten by an app update,
+then does the risky part: unpack the slot over the old app, mark it valid, and start it. If the power fails half way, the next start
+simply finishes the job.
 
-## Changes in OTAFIX 2.2
+## Why you'll like it
 
-- **Use maximum TX power for BLE**  
-  Changed BLE TX power to be set to +8 for nRF52840.
+* **Install once, then forget the ladder.** One Bluetooth visit per node puts this bootloader and the LoRa-OTA app on it. From then on,
+  app updates arrive over LoRa from neighbouring repeaters.
+* **The bootloader itself updates over LoRa too.** `fw blupdate bl-rev-8` fetches a new bootloader from a neighbour; the app and all
+  settings are kept.
+* **Power-cut safe.** The install step was tested with a simulated power cut at every single flash write (5153 checks), plus real
+  power pulls on the bench. A node that loses power during an install finishes it at the next start.
+* **Seed a version without installing it.** `fw pull-ble` restarts into a Bluetooth upload that goes into the slot, not over the
+  running app. The node keeps running and offers the new version to its neighbours. Five minutes without data and it goes back to
+  the app, unchanged.
+* **Your node stays your node.** Name, identity, contacts, radio settings and passwords live in a flash area the bootloader never
+  touches, so onboarding and every update keep them.
+* **No lock-in.** Stock repeater firmware runs on it fine (stock apps up to 792 KiB), and images are deliberately not signed, so you can
+  always go back to stock firmware.
+* **Gentle on weak batteries (new in rev 8).** The RAK13302 1 W booster stays off while the bootloader runs, so a board on a tired
+  battery no longer browns out when Bluetooth DFU starts.
 
-- **New boards**  
-  Elecrow ThinkNode M1, M3, M6  
-  LilyGo T-Echo  
-  Minewsemi MX25LE01  
-  Seeed SenseCAP Solar Node P1
+## Install it (once per node)
 
-## Changes in OTAFIX 2.1
+On a RAK3401 running stock MeshCore with the stock OTAFIX bootloader:
 
-- **Defaults to OTA DFU mode**  
-  When no valid application is present, the bootloader defaults to OTA DFU mode.  
-  This prevents devices from becoming stuck in UF2 mode after a failed OTA update.
+1. Send `start ota` from the phone app. The node shows up as `3401_DFU` in the **nRF Device Firmware Update** app. Upload
+   **`LoRa-OTA-bootloader-rev8_s140_6.1.1-ONBOARD.zip`**.
+2. **Right after**, upload the LoRa-OTA app's **`-firmware.zip`** from the
+   [app release](https://github.com/Passaita/MeshCore-LoRa-OTA/releases/tag/v1.17.28-rc21). A Bluetooth bootloader update erases the
+   app, so the node is off the air until this step is done.
+3. Join your circle with `fw passphrase <your phrase>` and you're set. The rest is in the
+   [LoRa-OTA README](https://github.com/Passaita/MeshCore-LoRa-OTA#getting-started-once-per-node).
 
-- **High-MTU BLE support**  
-  Enables larger DFU packets for improved throughput when supported by the client.  
-  The Android DFU app and [`dfu.py`](https://github.com/recrof/nrf_dfu_py) support large packets; the iOS DFU app is limited to 20-byte packets.
+`fw bl` on the node then shows `rev 8`. No erase is needed: the node keeps its identity and settings.
 
-- **Lazy flash erase**  
-  Flash pages are erased on demand during the transfer instead of upfront, significantly reducing the delay during DFU initialisation before the transfer begins.
+## Release files
 
-- **Small-packet accumulation**  
-  Packets smaller than 64 bytes are combined at the transport layer and written to flash in chunks of up to 240 bytes.  
-  This improves OTA performance from iOS devices and other small-packet DFU hosts by reducing flash write overhead.
+| File | Use |
+|---|---|
+| `LoRa-OTA-bootloader-rev8_s140_6.1.1-ONBOARD.zip` | by Bluetooth from the **stock** OTAFIX bootloader (`start ota`); upload the app zip right after |
+| `LoRa-OTA-bootloader-rev8-bootloader_only.zip` | by Bluetooth from an older LoRa-OTA bootloader; upload the app zip right after |
+| `LoRa-OTA-RAK3401-bootloader-rev8.lota` | over LoRa: nodes take it from a neighbour (`fw blupdate bl-rev-8`), app kept |
+| `LoRa-OTA-bootloader-rev8.hex` | SWD (`program ... verify`, never a mass erase) |
+| `LoRa-OTA-bootloader-rev8-update.uf2` | UF2 drag and drop |
 
-- **Automatic application boot after OTA over USB**  
-  When connected to a USB host, devices now automatically reboot into the application after a successful OTA update, instead of requiring a manual reset.
+Each release has a `SHA256SUMS.txt`. The served image of rev 8 has crc32 `E0BC335E` (`fw bl` shows it).
 
-- **Unique BLE advertising names per board**  
-  In OTA DFU mode, devices advertise using a board-specific name instead of the generic `AdaDFU`.  
-  See the [BLE advertising names](#ble-advertising-names) section for the current names.  
----
+## Is it safe? The honest part
 
-## Boards supported
-- Elecrow ThinkNode M1
-- Elecrow ThinkNode M3
-- Elecrow ThinkNode M6
-- Heltec T096
-- Heltec T1
-- Heltec T114 / HT-nRF5262
-- LilyGO T-Echo
-- Minewsemi MX25LE01
-- Nologo ProMicro NRF52840 (aka SuperMini NRF52840)
-- RAK 4631
-- RAK 3401
-- RAK WisMesh Tag
-- Seeed Studio SenseCAP Card Tracker T1000-E
-- Seeed SenseCAP Solar Node P1
-- Seeed Studio Wio Tracker L1
-- Seeed Studio XIAO nRF52840 BLE ([See note](#notes-on-xiao-nrf52840-ble)
-- Seeed Studio XIAO nRF52840 BLE SENSE
+* The bootloader only installs images that carry the LoRa-OTA firmware tag and fit the app region. Bluetooth OTA stays available as the
+  recovery path at all times.
+* There is **no automatic rollback**: one slot, no A/B copy. Roll a new version out to a node you can reach first.
+* Images are **not signed**, on purpose (see above). On the LoRa side, only nodes in your circle can serve or fetch firmware, and every
+  transfer is encrypted; see the app's [SECURITY.md](https://github.com/Passaita/MeshCore-LoRa-OTA/blob/main/docs/lora-ota/SECURITY.md).
+* This is a **community project**, not an official Adafruit, OTAFIX or RAKwireless release.
 
-If there is another nRF52840-based board you would like to see supported please raise a github issue and we can make it happen.
-## BLE advertising names
+## Documentation
 
-When in OTA DFU mode, devices advertise using a board-specific name rather than the generic `AdaDFU`.
+| You want to... | Read |
+|---|---|
+| use LoRa-OTA day to day (commands, fleet updates, recovery) | the [MeshCore-LoRa-OTA](https://github.com/Passaita/MeshCore-LoRa-OTA) repository |
+| understand the flash map, apply state machine and safeguards | [docs/FWPULL_BOOTLOADER.md](docs/FWPULL_BOOTLOADER.md) |
+| see what changed in each revision | [docs/REVISIONS.md](docs/REVISIONS.md) |
+| look up boards, BLE names, DFU app settings and troubleshooting from upstream OTAFIX | [docs/OTAFIX-README.md](docs/OTAFIX-README.md) |
 
-| Board                        | OTA DFU advertising name |
-| ---------------------------- | ------------------------ |
-| Elecrow ThinkNode M1         | `TNM1_DFU`               |
-| Elecrow ThinkNode M3         | `TNM3_DFU`               |
-| Elecrow ThinkNode M6         | `TNM6_DFU`               |
-| Heltec T096                  | `T096_DFU`               |
-| Heltec T1                    | `T1_DFU`                 |
-| Heltec T114                  | `T114_DFU`               |
-| LILYGO T-Echo                | `LGTE_DFU`               |
-| Minewsemi MX25LE01           | `MX25_DFU`               |
-| ProMicro NRF52840            | `PROM_DFU`               |
-| RAK 4631                     | `4631_DFU`               |
-| RAK 3401                     | `3401_DFU`               |
-| RAK WisMesh Tag              | `RTAG_DFU`               |
-| Seeed SenseCAP Solar Node P1 | `SCAP_DFU`               |
-| Seeed T1000e                 | `T1KE_DFU`               |
-| Seeed WioTracker L1          | `WTL1_DFU`               |
-| XIAO NRF52 BLE / SENSE       | `XIAO_DFU`               |
+## Building and tests
 
+* Build: `make BOARD=wiscore_rak3401 FW_OTA_BL_REV=8` with the ARM GCC toolchain on `PATH`.
+* Reproducible: this rebuilds the published rev 8 hex byte for byte:
+  ```
+  SOURCE_DATE_EPOCH=1791302731 make BOARD=wiscore_rak3401 FW_OTA_BL_REV=8 GIT_VERSION=0.9.2-OTAFIX2.3-BP1.4-41-blrev8 \
+    GIT_SUBMODULE_VERSIONS="lib/nrfx (7a4c9d9) lib/tinyusb (9775e76) lib/uf2 (adbb8c7)"
+  ```
+* `tools/fw_ota_hosttest`: `make test` runs the **unmodified** apply code on a simulated nRF52840 flash with a power cut at every flash
+  operation (5153 checks); `make mutants` puts known bugs back, and each must be caught (23/23).
+* `tools/check_vectors.py`: run before flashing any build. `tools/hw_bench`: Bluetooth DFU client, LoRa monitors, power-cut rigs.
 
----
+## Credits and licence
 
-## Installation
+* **[OTAFIX](https://github.com/oltaco/Adafruit_nRF52_Bootloader_OTAFIX)** by oltaco, based on the
+  [Adafruit nRF52 bootloader](https://github.com/adafruit/Adafruit_nRF52_Bootloader) (MIT). Nordic SDK files keep their own licence.
+* **LoRa-OTA additions**: LoRa-OTA contributors, MIT like the code they extend ([LICENSE](LICENSE)).
 
-**IMPORTANT:** If you are running a MeshCore companion firmware or Ripple firmware on your device **you will need to run an erase after flashing a new bootloader**. Use the MeshCore web flasher to do the erase, it will guide you to the correct erase firmware for your device. Other erase firmwares will not work, they will not erase the ExtraFS area.
-
-The recommended way to install the bootloader is using the UF2 file.  
-Download the UF2 file for your board (they can be found in the releases with filenames beginning with `update-`), enter UF2 mode (usually by double pressing the reset button within 0.5s) and copy the UF2 file across.
-
-If you have somehow managed to accidentally flash an incorrect bootloader to your device you will likely require flashing a full bootloader and SoftDevice zip package using ``adafruit-nrfutil``
-
----
-
-## Troubleshooting
-
-### Device does not appear as a USB drive or serial port
-
-If the device does not show up on your computer after flashing the bootloader or performing an OTA update, it may be **waiting in OTA DFU mode**.
-
-In **OTAFIX 2.0** and above, OTA DFU is the default state when no valid application is present.  
-In this mode:
-- No UF2 drive is exposed
-- No serial port is available
-- The device is waiting for an OTA firmware update over BLE
-
-**What to do:**
-- Perform an OTA update using a supported DFU app, **or**
-- Explicitly request UF2/serial mode using **double-reset**.
-
-This behaviour is intentional and prevents devices from getting stuck in UF2 mode after failed OTA updates.
-
----
-
-### OTA update fails with `Error: Operation Failed`
-
-If an OTA update consistently fails early with `Error: Operation Failed`, this is often caused by BLE stack incompatibilities when **Request High MTU** is enabled.
-
-**What to try:**
-- Experiment with different PRN settings. Try 12, 8, 1, or even off altogether!
-- Disable **Request High MTU** in your DFU app
-
-While high MTU significantly improves performance on supported devices, it is not required for a successful OTA update.
-
----
-
-## Recommended OTA DFU settings
-
-To perform the OTA update you can use **nRF Device Firmware Update**  
-([Android](https://play.google.com/store/apps/details?id=no.nordicsemi.android.dfu&hl=en&gl=US) / [iOS](https://apps.apple.com/sa/app/device-firmware-update/id1624454660))  
-or **nRF Connect**  
-([Android](https://play.google.com/store/apps/details?id=no.nordicsemi.android.mcp&hl=en&gl=US) / [iOS](https://apps.apple.com/gb/app/nrf-connect-for-mobile/id1054362403)).
-
-My preference is the **nRF Device Firmware Update** app.
-
-For **OTAFIX 2.0**, the following settings are recommended (these may change — feel free to experiment and report your findings):
-
-<table>
-<tr>
-<td valign="top">
-
-**Packet Receipt Notification (PRN):** ON  
-**Number of packets:** 30  
-**Reboot time:** 0ms  
-**Scan timeout:** 2000ms  
-**Request high MTU:** ON for Android (See notes below) / Not available on iOS  
-**Disable resume:** ON  
-**Prepare object delay:** 0ms  
-**Force scanning:** ON  
-**Keep bond:** OFF  
-**External MCU DFU:** OFF  
-
-**Notes:**
-- Some Android devices and BLE stacks do not behave well with **Request high MTU** enabled.  
-  If the transfer fails early with `ERROR: Operation Failed`, retry with **Request high MTU turned OFF**.
-- For maximum speed, Packet Receipt Notification can be disabled, and the number of packets increased.  
-  Android is generally more tolerant of higher values; on iOS and other small-packet hosts, values above ~60 are not recommended.
-
-</td>
-</tr>
-</table>
-
-[Recommended settings for versions prior to 2.0 can be found here](docs/oldsettings.md).
-
-**IMPORTANT:**  
-On <u>older versions</u> of the bootloader, performing an OTA update while the device was connected to a computer USB host would complete successfully but **would not automatically boot into the new application firmware**, requiring a manual reset.  
-This issue is fixed in **OTAFIX 2.0**.
-
----
-
-## OTA update on a MeshCore repeater
-
-First you will need to login to the repeater and issue the `start ota` CLI command.
-
-Next, open the nRF Device Firmware Update app, select the appropriate MeshCore firmware zip file for your device, select your device (it will be advertised as `ProMicro_OTA` / `RAK4631_OTA`, etc), and press start.
-
----
-
-## Donations
-
-Although it's not necessary, if you find this useful please consider donating to support my work!
-
-[![Ko-Fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/oltaco)
-
----
-
-## Notes on Xiao NRF52840 BLE
-
-Many of these boards are shipped with the Sense version of the bootloader installed. If your board has the Sense version installed you must use the Sense version when updating via UF2.
-
-You can look at the INFO_UF2.TXT file on the UF2 drive to check what version is currently installed.
-
-To check:
-1. Enter UF2 DFU mode (double-press reset) 
-2. Open the `INFO_UF2.TXT` file on the mounted drive  
-
-If the file shows: "Board-ID: nRF52840-SeeedXiaoSense-v1" then you must install the ***SENSE*** variant if updating via UF2 file.
+Not an official Adafruit, OTAFIX or RAKwireless release.
