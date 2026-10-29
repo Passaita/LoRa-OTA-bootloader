@@ -5,7 +5,7 @@
 
 | Rev | Date | Change | Served image crc32 |
 |---|---|---|---|
-| **8** | 2026-10-06 | **Current.** The RAK13302 1 W booster stays OFF while the bootloader runs: P0.21 (SKY66122 CSD+CPS) and P1.02 (WB_IO2: 3V3_S rail + 5 V boost) are driven LOW at bootloader start and again at the hand-over to the app (rev 1-7 left them floating). Fixes Bluetooth DFU requests lost to a brownout on weak batteries. The app switches the booster on as before. | E0BC335E |
+| **8** | 2026-10-06 | **Current.** The RAK13302 1 W booster stays OFF while the bootloader runs: P0.21 (SKY66122 CSD+CPS) and P1.02 (WB_IO2: 3V3_S rail + 5 V boost) are driven LOW at bootloader start and again at the hand-over to the app (rev 1-7 left them floating). Meant to stop Bluetooth DFU requests being lost to a brownout on weak batteries; a test board near 3.3 V still resets, so do Bluetooth updates on a charged battery or USB. The app switches the booster on as before. | E0BC335E |
 | 7 | 2026-09-30 | A Bluetooth/serial app upload keeps a slot that holds exactly that app (same raw length and CRC-32), so the node goes on serving it; a different slot image is still erased as stale. | CBD1064D |
 | 6 | 2026-09-30 | Stock firmware installs over it: raw app uploads may use everything below the control page (up to 792 KiB; the stock RAK3401 repeater is 517 KiB). Control page and file system stay protected; images from the LoRa slot stay limited to 448 KiB. | 0A03600F |
 | 5 | 2026-09-29 | Bluetooth upload **into the slot** (`fw pull-ble`, GPREGRET 0xA9; app/bootloader packages refused in that mode). 5-minute inactivity timeout for every Bluetooth DFU. | 03790E24 |

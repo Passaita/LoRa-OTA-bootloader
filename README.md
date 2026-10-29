@@ -9,7 +9,7 @@ added**: it installs a firmware image that the running repeater has downloaded o
 serial DFU, UF2, double-reset, "no app -> Bluetooth OTA") works as before.
 
 > **Current release: [rev 8](https://github.com/Passaita/LoRa-OTA-bootloader/releases/tag/bootloader-rev8)**, public community test.
-> It runs on every node of the test fleet. Use it together with the
+> It is the standard bootloader of the test fleet. Use it together with the
 > [LoRa-OTA app](https://github.com/Passaita/MeshCore-LoRa-OTA/releases/tag/v1.17.28-rc21) (v1.17.28-rc21).
 
 ## Why a repeater needs it
@@ -34,8 +34,9 @@ simply finishes the job.
   touches, so onboarding and every update keep them.
 * **No lock-in.** Stock repeater firmware runs on it fine (stock apps up to 792 KiB), and images are deliberately not signed, so you can
   always go back to stock firmware.
-* **Gentle on weak batteries (new in rev 8).** The RAK13302 1 W booster stays off while the bootloader runs, so a board on a tired
-  battery no longer browns out when Bluetooth DFU starts.
+* **Booster off in the bootloader (new in rev 8).** The RAK13302 1 W booster stays off while the bootloader runs, so it draws no
+  current during installs and Bluetooth DFU. This does not cure every weak battery: one test board on a LiFePO4 cell near 3.3 V still
+  resets when Bluetooth DFU starts. Do Bluetooth updates on a charged battery or on USB.
 
 ## Install it (once per node)
 
